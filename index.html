@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>粒子心形 + 字符雨</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: black;
+    }
+    canvas {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+  <audio id="bgm" autoplay loop muted>
+    <source src="Happy Birthday Song.mp3" type="audio/mpeg">
+  </audio>
+  <canvas id="matrixRain" style="z-index: 0; pointer-events: none;"></canvas>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+  <script>
+    // === 字符雨效果 ===
+    const canvasRain = document.getElementById('matrixRain');
+    const ctx = canvasRain.getContext('2d');
+
+    function resizeMatrixCanvas() {
+      canvasRain.width = window.innerWidth;
+      canvasRain.height = window.innerHeight;
+    }
+
+    window.addEventListener('resize', resizeMatrixCanvas);
+    resizeMatrixCanvas();
+
+    const letters = 'I LOVE U'.split('');
+    const fontSize = 16;
+    let columns = Math.floor(canvasRain.width / fontSize);
+    let drops = Array(columns).fill(1);
+
+    function drawMatrixRain() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.05)'; // 拖尾效果
+      ctx.fillRect(0, 0, canvasRain.width, canvasRain.height);
+
+      ctx.fillStyle = '#f584b7';
+      ctx.font = fontSize + 'px monospace';
+
+      for (let i = 0; i < drops.length; i++) {
+        const text = letters[Math.floor(Math.random() * letters.length)];
+        ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+
+        if (drops[i] * fontSize > canvasRain.height || Math.random() > 0.95) {
+          drops[i] = 0;
+        }
+        drops[i]++;
+      }
+    }
+
+    setInterval(drawMatrixRain, 33);
+
+    // === Three.js 粒子動畫 ===
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(10, 25, 40);
+    camera.lookAt(0, 15, 0);
+
+    const renderer = new THREE.WebGLRenderer({
+      alpha: true,
+      antialias: true,
+      preserveDrawingBuffer: false
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.domElement.style.zIndex = 1;
+    document.body.appendChild(renderer.domElement);
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      resizeMatrixCanvas();
+      columns = Math.floor(canvasRain.width / fontSize);
+      drops = Array(columns).fill(1);
+    });
+
+    const PARTICLE_COUNT = 20000;
+    const RING_RADIUS = 20;
+    const ROTATION_SPEED = 0.03;
+    const HEART_SCALE = 8;
+    const MAX_Z_THICKNESS = 3;
+    let toHeart = false;
+
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const colors = new Float32Array(PARTICLE_COUNT * 4);
+
+    const baseAngles = new Float32Array(PARTICLE_COUNT);
+    const radiusOffsets = new Float32Array(PARTICLE_COUNT);
+    const lerpFactors = new Float32Array(PARTICLE_COUNT);
+    const lerpSpeeds = new Float32Array(PARTICLE_COUNT);
+    const targets = [];
+
+    const heartBottomPoint = new THREE.Vector3(0, 20 - HEART_SCALE * 1.5, 0);
+
+    function isInsideHeart(x, y) {
+      const val = Math.pow(x * x + y * y - 1, 3) - x * x * Math.pow(y, 3);
+      return val <= 0;
+    }
+
+    function distanceToHeartBoundary(x, y) {
+      function dist(fn) {
+        let left = 0, right = 2;
+        for (let i = 0; i < 50; i++) {
+          const mid = (left + right) / 2;
+          if (fn(mid)) left = mid; else right = mid;
+        }
+        return left;
+      }
+      const dx = dist(d => isInsideHeart(x + d, y) && isInsideHeart(x - d, y));
+      const dy = dist(d => isInsideHeart(x, y + d) && isInsideHeart(x, y - d));
+      return dx + dy;
+    }
+
+    function zThicknessHeartDistance(x, y) {
+      const dist = distanceToHeartBoundary(x, y);
+      const maxDist = 1.5;
+      const normalized = Math.min(dist / maxDist, 1);
+      return MAX_Z_THICKNESS * normalized;
+    }
+
+    const heartPoints = [];
+    const heartCount = Math.floor(PARTICLE_COUNT * 0.4);
+    let generated = 0;
+
+    while (generated < heartCount) {
+      const x = (Math.random() * 3 - 1.5);
+      const y = (Math.random() * 3 - 1.5);
+      if (isInsideHeart(x, y)) {
+        const z = (Math.random() < 0.5 ? -1 : 1) * zThicknessHeartDistance(x, y);
+        heartPoints.push(new THREE.Vector3(x * HEART_SCALE, y * HEART_SCALE + 20, z));
+        generated++;
+      }
+    }
+
+    for (let i = 0; i < PARTICLE_COUNT; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      baseAngles[i] = angle;
+      const radiusOffset = 0.1 + 0.9 * Math.random();
+      radiusOffsets[i] = radiusOffset;
+      lerpFactors[i] = 0;
+      lerpSpeeds[i] = i < heartCount ? 0.001 + (1 - radiusOffset) * 0.004 : 0;
+      const r = RING_RADIUS * radiusOffset;
+      positions[i * 3] = Math.cos(angle) * r;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = Math.sin(angle) * r;
+      targets.push(i < heartCount ? heartPoints[i] : null);
+      colors[i * 4 + 0] = 1.0;
+      colors[i * 4 + 1] = 0.2;
+      colors[i * 4 + 2] = 0.4;
+      colors[i * 4 + 3] = 0.9;
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
+
+    const material = new THREE.PointsMaterial({
+      vertexColors: true,
+      size: 0.3,
+      sizeAttenuation: true,
+      transparent: true,
+      depthWrite: false,
+    });
+
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
+
+    const message = "!QQC yadthirB yppaH !QQC yadthirB yppaH";
+    const textSprites = [];
+    const textRadii = [5, 10, 15];
+    const textYPositions = [5, 10, 15];
+
+    for (let idx = 0; idx < textRadii.length; idx++) {
+      const radius = textRadii[idx];
+      const yPos = textYPositions[idx];
+      message.split('').forEach((char, i, arr) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 40px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(char, 32, 32);
+
+        const texture = new THREE.CanvasTexture(canvas);
+        const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+        const sprite = new THREE.Sprite(material);
+        sprite.scale.set(2, 2, 1);
+        const angle = (i / arr.length) * Math.PI * 2;
+        sprite.position.set(Math.cos(angle) * radius, yPos, Math.sin(angle) * radius);
+        sprite.userData = { radius, y: yPos, index: i };
+        scene.add(sprite);
+        textSprites.push(sprite);
+      });
+    }
+
+    let time = 0;
+    let heartRotation = 0;
+    const tempVec = new THREE.Vector3();
+
+    function animate() {
+      time += ROTATION_SPEED;
+      if (toHeart) heartRotation += 0.002;
+
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        let x, y, z;
+        const baseAngle = baseAngles[i];
+        const radiusOffset = radiusOffsets[i];
+        let lerp = lerpFactors[i];
+        const lerpSpeed = lerpSpeeds[i];
+        const radiusOsc = 0.05 * Math.sin(time * 10 + i * 0.5);
+
+        if (targets[i]) {
+          lerpFactors[i] = toHeart ? Math.min(lerp + lerpSpeed, 1) : Math.max(lerp - lerpSpeed, 0);
+          lerp = lerpFactors[i];
+          const startRadius = RING_RADIUS * radiusOffset * (0.95 + radiusOsc);
+          const angle = baseAngle + time;
+          tempVec.set(Math.cos(angle) * startRadius, 0, Math.sin(angle) * startRadius);
+          const targetPos = targets[i].clone();
+          if (targetPos.y < 12) targetPos.lerp(heartBottomPoint, lerp);
+          const cos = Math.cos(heartRotation);
+          const sin = Math.sin(heartRotation);
+          const xRot = targetPos.x * cos - targetPos.z * sin;
+          const zRot = targetPos.x * sin + targetPos.z * cos;
+          targetPos.x = xRot;
+          targetPos.z = zRot;
+          if (targetPos.y < 12) targetPos.z = 0;
+          tempVec.lerp(targetPos, lerp);
+          [x, y, z] = [tempVec.x, tempVec.y, tempVec.z];
+          colors[i * 4 + 3] = 0.5 + lerp * 0.5;
+        } else {
+          const radius = RING_RADIUS * 0.9 * radiusOffset * (0.95 + radiusOsc);
+          const angle = baseAngle + time;
+          x = Math.cos(angle) * radius;
+          y = 0;
+          z = Math.sin(angle) * radius;
+          colors[i * 4 + 3] = 0.3;
+        }
+
+        positions[i * 3 + 0] = x;
+        positions[i * 3 + 1] = y;
+        positions[i * 3 + 2] = z;
+      }
+
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
+
+      textSprites.forEach(sprite => {
+        const { radius, y, index } = sprite.userData;
+        const angle = time * 0.5 + (index / message.length) * Math.PI * 2;
+        const x = Math.cos(angle) * radius;
+        const z = Math.sin(angle) * radius;
+        sprite.position.set(x, y, z);
+        sprite.lookAt(camera.position);
+      });
+
+      renderer.autoClearColor = true;
+      renderer.setClearColor(0x000000, 0); // 透明背景，避免遮住字符雨
+      renderer.render(scene, camera);
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+
+    window.addEventListener('click', () => {
+      toHeart = !toHeart;
+    });
+  </script>
+
+  <script>
+    const bgm = document.getElementById('bgm');
+
+    // 监听首次点击整个页面
+    document.addEventListener('click', () => {
+      bgm.muted = false;
+      bgm.play().catch(err => {
+        console.error('播放失败:', err);
+      });
+    }, { once: true }); // 只触发一次
+  </script>
+  
+</body>
+</html>
